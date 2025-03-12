@@ -6,9 +6,15 @@
 
 #define DEBUG
 
-int main() {
+int main(int argc, char** argv) {
     General_Params g;               // Default parameters defined in mapper.h. This should not be changed.
-    Mapper mapper("fully_connected.txt", g);
+
+    if (argc != 2) {
+        std::cerr << "Usage: " << argv[0] << " <path_to_dfg_file>" << std::endl;
+        return 1;
+    }
+
+    Mapper mapper(argv[1], g);
     auto parsed_ops = mapper.parsed();
     assert(parsed_ops.size() == g.num_cluster * g.inst_tab_size);
 
