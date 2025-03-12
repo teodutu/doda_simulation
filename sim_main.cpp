@@ -3,14 +3,62 @@
 #include "verilated.h"
 #include "mapper.h"
 #include <bitset>
+#include <unordered_map>
 
 #define DEBUG
+
+std::unordered_map<std::string, std::pair<std::vector<int>, std::vector<int>>> parse_mem_trace(
+        const std::string& filename) {
+    std::unordered_map<std::string, std::pair<std::vector<int>, std::vector<int>>> mem_trace;
+    std::ifstream file(filename);
+    std::string line;
+
+    // Skip the header line
+    std::getline(file, line);
+
+    std::vector<std::string> lines;
+    while (std::getline(file, line)) {
+        lines.push_back(line);
+    }
+
+    // Ignore the last two lines
+    if (lines.size() > 2) {
+        lines.pop_back();
+        lines.pop_back();
+    }
+
+    for (size_t i = 0; i < lines.size(); i += 4) {
+        std::string var_name;
+        int offset, pre_run_data[4], post_run_data[4];
+
+        for (int j = 0; j < 4; ++j) {
+            std::stringstream ss(lines[i + j]);
+            std::getline(ss, var_name, ',');
+            ss >> offset;
+            ss.ignore(1, ',');
+            ss >> pre_run_data[j];
+            ss.ignore(1, ',');
+            ss >> post_run_data[j];
+        }
+
+        int pre_run_value = (pre_run_data[3] << 24) | (pre_run_data[2] << 16) | (pre_run_data[1] << 8) | pre_run_data[0];
+        int post_run_value = (post_run_data[3] << 24) | (post_run_data[2] << 16) | (post_run_data[1] << 8) | post_run_data[0];
+
+        mem_trace[var_name].first.push_back(pre_run_value);
+        mem_trace[var_name].second.push_back(post_run_value);
+    }
+
+    mem_trace.erase("loopstart");
+    mem_trace.erase("loopend");
+
+    return mem_trace;
+}
 
 int main(int argc, char** argv) {
     General_Params g;               // Default parameters defined in mapper.h. This should not be changed.
 
-    if (argc != 2) {
-        std::cerr << "Usage: " << argv[0] << " <path_to_dfg_file>" << std::endl;
+    if (argc != 3) {
+        std::cerr << "Usage: " << argv[0] << " <path_to_dfg_file> <path_to_mem_traces_file>" << std::endl;
         return 1;
     }
 
@@ -137,16 +185,41 @@ int main(int argc, char** argv) {
     
     // Sending memory data to the scratchpad memories of the PE clusters.
 
+    // Read the memory traces
+    auto mem_trace = parse_mem_trace(argv[2]);
+
     // Filling the data memory
-    // mem[0][i] = i
+
+    std::cout << "SIM_MAIN) num_data_mem_entries = " << g.num_data_mem_entries << '';
+
+    // mem[0][i] = mem_trace[*].first[i]
+    // Rewrite the line below for C++14 (without structured bindings)
+    for (auto const& trace : mem_trace) {
+        // BUG: Assumes input is small enough to fit all into 256 bytes.
+        // Places all variables linearly in the memory.
+
+        for (int num : trace.second.first) {
+            doda->clock = 1;
+
+            std::cout << "SIM_MAIN) Writing " << num << " to the scratchpad memory." << std::endl;
+
+            doda->io_v_t_axi_read_in_0_valid = 1;
+            doda->io_v_t_axi_read_in_0_bits = num;
+
+            doda->eval();
+            doda->clock = 0;
+            doda->eval();
+        }
+    }
+
     // mem[1][i] = i + 32
     // mem[2][i] = i + 64
     // mem[3][i] = i + 96
+
     int cnt = 0;
-    while (cnt < g.num_data_mem_entries && doda->io_v_t_axi_read_in_0_ready && doda->io_v_t_axi_read_in_1_ready && doda->io_v_t_axi_read_in_2_ready && doda->io_v_t_axi_read_in_3_ready) {
+    while (cnt < g.num_data_mem_entries && doda->io_v_t_axi_read_in_1_ready
+            && doda->io_v_t_axi_read_in_2_ready && doda->io_v_t_axi_read_in_3_ready) {
         doda->clock = 1;
-        doda->io_v_t_axi_read_in_0_valid = 1;
-        doda->io_v_t_axi_read_in_0_bits = cnt;
         doda->io_v_t_axi_read_in_1_valid = 1;
         doda->io_v_t_axi_read_in_1_bits = cnt+32;
         doda->io_v_t_axi_read_in_2_valid = 1;
@@ -158,6 +231,7 @@ int main(int argc, char** argv) {
         doda->eval();
         cnt++;
     }
+
     doda->clock = 1;
     doda->io_v_t_axi_read_in_0_valid = 0;
     doda->io_v_t_axi_read_in_1_valid = 0;
